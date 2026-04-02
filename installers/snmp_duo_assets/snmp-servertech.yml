@@ -1,0 +1,199 @@
+# Lean ServerTech module for the duo installer.
+# Keeps inlet/outlet identity plus current, voltage, and active power readings.
+auths:
+  public_v2:
+    community: public
+    security_level: noAuthNoPriv
+    auth_protocol: MD5
+    priv_protocol: DES
+    version: 2
+
+modules:
+  servertech_pdu: &servertech_pdu_base
+    walk:
+    - 1.3.6.1.4.1.13742.6.3.3.3.1.1
+    - 1.3.6.1.4.1.13742.6.3.3.3.1.2
+    - 1.3.6.1.4.1.13742.6.3.3.3.1.3
+    - 1.3.6.1.4.1.13742.6.3.3.4.1.6
+    - 1.3.6.1.4.1.13742.6.3.3.4.1.7
+    - 1.3.6.1.4.1.13742.6.3.5.3.1.1
+    - 1.3.6.1.4.1.13742.6.3.5.3.1.2
+    - 1.3.6.1.4.1.13742.6.3.5.3.1.3
+    - 1.3.6.1.4.1.13742.6.3.5.3.1.28
+    - 1.3.6.1.4.1.13742.6.3.5.4.1.6
+    - 1.3.6.1.4.1.13742.6.3.5.4.1.7
+    - 1.3.6.1.4.1.13742.6.5.2.3.1.4
+    - 1.3.6.1.4.1.13742.6.5.4.3.1.4
+    metrics:
+    - name: inletId
+      oid: 1.3.6.1.4.1.13742.6.3.3.3.1.1
+      type: gauge
+      help: A unique value for each inlet - 1.3.6.1.4.1.13742.6.3.3.3.1.1
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+    - name: inletLabel
+      oid: 1.3.6.1.4.1.13742.6.3.3.3.1.2
+      type: DisplayString
+      help: The label on the PDU identifying the inlet. - 1.3.6.1.4.1.13742.6.3.3.3.1.2
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+    - name: inletName
+      oid: 1.3.6.1.4.1.13742.6.3.3.3.1.3
+      type: DisplayString
+      help: The user-defined name. - 1.3.6.1.4.1.13742.6.3.3.3.1.3
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+    - name: inletSensorUnits
+      oid: 1.3.6.1.4.1.13742.6.3.3.4.1.6
+      type: gauge
+      help: The unit in which the sensor reading is reported - 1.3.6.1.4.1.13742.6.3.3.4.1.6
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+      enum_values:
+        1: volt
+        2: amp
+        3: watt
+    - name: inletSensorDecimalDigits
+      oid: 1.3.6.1.4.1.13742.6.3.3.4.1.7
+      type: gauge
+      help: The number of digits displayed to the right of the decimal point - 1.3.6.1.4.1.13742.6.3.3.4.1.7
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+    - name: measurementsInletSensorValue
+      oid: 1.3.6.1.4.1.13742.6.5.2.3.1.4
+      type: gauge
+      help: The sensor reading as an unsigned integer - 1.3.6.1.4.1.13742.6.5.2.3.1.4
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: inletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+    - name: outletId
+      oid: 1.3.6.1.4.1.13742.6.3.5.3.1.1
+      type: gauge
+      help: A unique value for each outlet - 1.3.6.1.4.1.13742.6.3.5.3.1.1
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+    - name: outletLabel
+      oid: 1.3.6.1.4.1.13742.6.3.5.3.1.2
+      type: DisplayString
+      help: The label on the PDU identifying the outlet. - 1.3.6.1.4.1.13742.6.3.5.3.1.2
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+    - name: outletName
+      oid: 1.3.6.1.4.1.13742.6.3.5.3.1.3
+      type: DisplayString
+      help: The user-defined name. - 1.3.6.1.4.1.13742.6.3.5.3.1.3
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+    - name: outletSwitchable
+      oid: 1.3.6.1.4.1.13742.6.3.5.3.1.28
+      type: gauge
+      help: Is this outlet switchable? - 1.3.6.1.4.1.13742.6.3.5.3.1.28
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+      enum_values:
+        1: "true"
+        2: "false"
+    - name: outletSensorUnits
+      oid: 1.3.6.1.4.1.13742.6.3.5.4.1.6
+      type: gauge
+      help: The unit in which the sensor reading is reported - 1.3.6.1.4.1.13742.6.3.5.4.1.6
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+          14: onOff
+      enum_values:
+        -1: none
+        0: other
+        1: volt
+        2: amp
+        3: watt
+    - name: outletSensorDecimalDigits
+      oid: 1.3.6.1.4.1.13742.6.3.5.4.1.7
+      type: gauge
+      help: The number of digits displayed to the right of the decimal point - 1.3.6.1.4.1.13742.6.3.5.4.1.7
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+          14: onOff
+    - name: measurementsOutletSensorValue
+      oid: 1.3.6.1.4.1.13742.6.5.4.3.1.4
+      type: gauge
+      help: The sensor reading as an unsigned integer - 1.3.6.1.4.1.13742.6.5.4.3.1.4
+      indexes:
+      - labelname: pduId
+        type: gauge
+      - labelname: outletId
+        type: gauge
+      - labelname: sensorType
+        type: gauge
+        enum_values:
+          1: rmsCurrent
+          4: rmsVoltage
+          5: activePower
+          14: onOff
+  servertech_pdu_lowbulk:
+    <<: *servertech_pdu_base
+    max_repetitions: 5

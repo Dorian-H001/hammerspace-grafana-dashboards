@@ -10,7 +10,9 @@ echo "This script will:"
 echo " - Install needed modules and packages."
 echo " - Install Docker and Docker compose v2 if needed."
 echo " - Install Grafana (unless already running)."
-echo " - Download a default snmp.yml file."
+echo " - Preserve a local SNMP generator workspace for APC + ServerTech."
+echo " - Build a combined snmp.yml for a single SNMP exporter on port 9116."
+echo " - Prompt before replacing an existing live snmp.yml."
 echo " - Prompt user for full file path to prometheus.yml after generation."
 echo " - Build a Docker container with Prometheus and SNMP Exporter."
 echo ""
@@ -49,6 +51,23 @@ if [[ $EUID -ne 0 ]]; then
   echo "This script has to run as root. Exiting."
   exit 1
 fi
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ASSET_DIR="$SCRIPT_DIR/snmp_duo_assets"
+SNMP_EXPORTER_VERSION="0.26.0"
+
+for required_path in \
+  "$ASSET_DIR/generator.yml" \
+  "$ASSET_DIR/snmp-servertech.yml" \
+  "$ASSET_DIR/mibs/PDU2-MIB.txt" \
+  "$ASSET_DIR/mibs/servertech-sentry3-mib" \
+  "$ASSET_DIR/mibs/servertech-sentry4-mib"; do
+  if [[ ! -f "$required_path" ]]; then
+    echo "Required duo asset missing: $required_path"
+    echo "Ensure the full installer workspace is present before running this script."
+    exit 1
+  fi
+done
 
 # Checks for Missing Python packages/modules.
 echo ""
@@ -172,17 +191,101 @@ done
 echo "Setting up Directory Structure at /opt/monitoring-duo..."
 mkdir -p /opt/monitoring-duo/config
 mkdir -p /opt/monitoring-duo/snmp
+mkdir -p /opt/monitoring-duo/snmp-generator/mibs
 echo "Directories created."
 
-# Default official download for snmp.yml file from Prometheus Repo
-echo "Fetching snmp.yml from Prometheus GitHub..."
-curl -sSL https://raw.githubusercontent.com/prometheus/snmp_exporter/main/snmp.yml \
-  -o /opt/monitoring-duo/snmp/snmp.yml
-echo "snmp.yml downloaded to /opt/monitoring-duo/snmp/"
+# Preserve generator inputs in a durable local workspace.
+echo "Updating persistent SNMP generator workspace..."
+cp "$ASSET_DIR/generator.yml" /opt/monitoring-duo/snmp-generator/generator.yml
+cp "$ASSET_DIR/snmp-servertech.yml" /opt/monitoring-duo/snmp-generator/snmp-servertech.yml
+cp "$ASSET_DIR"/mibs/* /opt/monitoring-duo/snmp-generator/mibs/
+echo "SNMP generator assets copied to /opt/monitoring-duo/snmp-generator/"
 
-# Remove deprecated config fields to prevent SNMP Exporter from crashing
-sed -i '/datetime_pattern:/d' /opt/monitoring-duo/snmp/snmp.yml
-echo "Cleaned deprecated datetime_pattern fields from snmp.yml."
+BASE_SNMP_TMP=$(mktemp)
+MERGED_SNMP_TMP=$(mktemp)
+PROM_YML_TMP=$(mktemp)
+cleanup() {
+  rm -f "$BASE_SNMP_TMP" "$MERGED_SNMP_TMP" "$PROM_YML_TMP"
+}
+trap cleanup EXIT
+
+echo "Fetching pinned base snmp.yml for snmp_exporter v${SNMP_EXPORTER_VERSION}..."
+curl -sSL "https://raw.githubusercontent.com/prometheus/snmp_exporter/v${SNMP_EXPORTER_VERSION}/snmp.yml" \
+  -o "$BASE_SNMP_TMP"
+cp "$BASE_SNMP_TMP" /opt/monitoring-duo/snmp-generator/snmp-base.yml
+
+echo "Merging base APC config with bundled ServerTech module..."
+python3 - "$BASE_SNMP_TMP" "$ASSET_DIR/snmp-servertech.yml" "$MERGED_SNMP_TMP" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+
+def strip_datetime_pattern(node):
+    if isinstance(node, dict):
+        node.pop("datetime_pattern", None)
+        for value in node.values():
+            strip_datetime_pattern(value)
+    elif isinstance(node, list):
+        for item in node:
+            strip_datetime_pattern(item)
+
+
+def load_yaml(path):
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+base_path, custom_path, output_path = sys.argv[1:4]
+base_config = load_yaml(base_path)
+custom_config = load_yaml(custom_path)
+
+base_config.setdefault("auths", {}).update(custom_config.get("auths", {}))
+base_config.setdefault("modules", {}).update(custom_config.get("modules", {}))
+strip_datetime_pattern(base_config)
+
+with Path(output_path).open("w", encoding="utf-8") as handle:
+    yaml.safe_dump(base_config, handle, sort_keys=False)
+PY
+cp "$MERGED_SNMP_TMP" /opt/monitoring-duo/snmp-generator/snmp-combined.yml
+
+INSTALL_SNMP_CONFIG=true
+if [[ -f /opt/monitoring-duo/snmp/snmp.yml ]]; then
+  echo ""
+  echo "A live snmp.yml already exists at /opt/monitoring-duo/snmp/snmp.yml."
+  echo "  1) Keep existing"
+  echo "  2) Replace with generated combined config"
+  echo "  3) Back up and replace"
+  while true; do
+    read -p "Choose 1, 2, or 3: " snmp_choice
+    case "$snmp_choice" in
+      1)
+        INSTALL_SNMP_CONFIG=false
+        echo "Keeping existing snmp.yml."
+        break
+        ;;
+      2)
+        echo "Replacing existing snmp.yml."
+        break
+        ;;
+      3)
+        backup_path="/opt/monitoring-duo/snmp/snmp.yml.bak.$(date +%Y%m%d%H%M%S)"
+        cp /opt/monitoring-duo/snmp/snmp.yml "$backup_path"
+        echo "Backed up existing snmp.yml to $backup_path"
+        break
+        ;;
+      *)
+        echo "Please enter 1, 2, or 3."
+        ;;
+    esac
+  done
+fi
+
+if [[ "$INSTALL_SNMP_CONFIG" == true ]]; then
+  cp "$MERGED_SNMP_TMP" /opt/monitoring-duo/snmp/snmp.yml
+  echo "Installed combined snmp.yml to /opt/monitoring-duo/snmp/"
+fi
 
 # Additional instructions for prometheus.yml generation.
 # Prompt user for path of prometheus.yml
@@ -209,12 +312,57 @@ while true; do
   echo ""
   echo "Example path: /root/hammerspace-grafana-dashboards/installers/prometheus.yml"
   echo ""
-  echo "Please enter the full path to the generated prometheus.yml file."
+  echo "Please enter the full path to the original generated prometheus.yml file."
+  echo "Do not use /opt/monitoring-duo/config/prometheus.yml as the source file."
   echo ""
   read -r PROM_YML_PATH
   if [[ -f "$PROM_YML_PATH" ]]; then
-    cp "$PROM_YML_PATH" /opt/monitoring-duo/config/prometheus.yml
-    echo "prometheus.yml copied to /opt/monitoring-duo/config/"
+    cp "$PROM_YML_PATH" "$PROM_YML_TMP"
+    python3 - "$PROM_YML_TMP" /opt/monitoring-duo/config/prometheus.yml localhost:9116 <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+
+def load_yaml(path):
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+input_path, output_path, snmp_endpoint = sys.argv[1:4]
+config = load_yaml(input_path)
+scrape_configs = config.get("scrape_configs", [])
+
+for job in scrape_configs:
+    if job.get("job_name") == "snmp_exporter":
+        for static_config in job.get("static_configs", []):
+            static_config["targets"] = [snmp_endpoint]
+
+    if job.get("metrics_path") != "/snmp":
+        continue
+
+    relabel_configs = job.setdefault("relabel_configs", [])
+    address_rule = None
+    for relabel_config in relabel_configs:
+        if relabel_config.get("target_label") == "__address__":
+            address_rule = relabel_config
+            break
+
+    if address_rule is None:
+        relabel_configs.append(
+            {
+                "target_label": "__address__",
+                "replacement": snmp_endpoint,
+            }
+        )
+    else:
+        address_rule["replacement"] = snmp_endpoint
+
+with Path(output_path).open("w", encoding="utf-8") as handle:
+    yaml.safe_dump(config, handle, sort_keys=False)
+PY
+    echo "prometheus.yml copied and normalized for the single duo SNMP exporter."
     break
   else
     echo ""
