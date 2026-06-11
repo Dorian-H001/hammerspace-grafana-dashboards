@@ -10,7 +10,9 @@ echo "This script will:"
 echo " - Install needed modules and packages."
 echo " - Install Docker and Docker compose v2 if needed."
 echo " - Install Grafana (unless already running)."
-echo " - Download a default snmp.yml file."
+echo " - Download a pinned default snmp.yml file."
+echo " - Add embedded lean ServerTech PDU SNMP support."
+echo " - Normalize the generated prometheus.yml for the single local SNMP Exporter."
 echo " - Prompt user for full file path to prometheus.yml after generation."
 echo " - Build a Docker container with Prometheus and SNMP Exporter."
 echo ""
@@ -43,6 +45,204 @@ done
 # INTERNAL USE ONLY CUSTOMERS GET A DIFFERENT ONE.
 # Set up Docker and runs a unified Prometheus + SNMP Exporter service together on CentOS 8.5+.
 set -euo pipefail
+SNMP_EXPORTER_VERSION="0.26.0"
+SERVERTECH_SNMP_MODULE=$(cat <<'EOF'
+auths:
+  public_v2:
+    community: public
+    security_level: noAuthNoPriv
+    auth_protocol: MD5
+    priv_protocol: DES
+    version: 2
+
+modules:
+  servertech_pdu: &servertech_pdu_base
+    walk:
+      - 1.3.6.1.4.1.13742.6.3.3.3.1.1
+      - 1.3.6.1.4.1.13742.6.3.3.3.1.2
+      - 1.3.6.1.4.1.13742.6.3.3.3.1.3
+      - 1.3.6.1.4.1.13742.6.3.3.4.1.6
+      - 1.3.6.1.4.1.13742.6.3.3.4.1.7
+      - 1.3.6.1.4.1.13742.6.3.5.3.1.1
+      - 1.3.6.1.4.1.13742.6.3.5.3.1.2
+      - 1.3.6.1.4.1.13742.6.3.5.3.1.3
+      - 1.3.6.1.4.1.13742.6.3.5.3.1.28
+      - 1.3.6.1.4.1.13742.6.3.5.4.1.6
+      - 1.3.6.1.4.1.13742.6.3.5.4.1.7
+      - 1.3.6.1.4.1.13742.6.5.2.3.1.4
+      - 1.3.6.1.4.1.13742.6.5.4.3.1.4
+    metrics:
+      - name: inletId
+        oid: 1.3.6.1.4.1.13742.6.3.3.3.1.1
+        type: gauge
+        help: A unique value for each inlet - 1.3.6.1.4.1.13742.6.3.3.3.1.1
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+      - name: inletLabel
+        oid: 1.3.6.1.4.1.13742.6.3.3.3.1.2
+        type: DisplayString
+        help: The label on the PDU identifying the inlet. - 1.3.6.1.4.1.13742.6.3.3.3.1.2
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+      - name: inletName
+        oid: 1.3.6.1.4.1.13742.6.3.3.3.1.3
+        type: DisplayString
+        help: The user-defined name. - 1.3.6.1.4.1.13742.6.3.3.3.1.3
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+      - name: inletSensorUnits
+        oid: 1.3.6.1.4.1.13742.6.3.3.4.1.6
+        type: gauge
+        help: The unit in which the sensor reading is reported - 1.3.6.1.4.1.13742.6.3.3.4.1.6
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+        enum_values:
+          1: volt
+          2: amp
+          3: watt
+      - name: inletSensorDecimalDigits
+        oid: 1.3.6.1.4.1.13742.6.3.3.4.1.7
+        type: gauge
+        help: The number of digits displayed to the right of the decimal point - 1.3.6.1.4.1.13742.6.3.3.4.1.7
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+      - name: measurementsInletSensorValue
+        oid: 1.3.6.1.4.1.13742.6.5.2.3.1.4
+        type: gauge
+        help: The sensor reading as an unsigned integer - 1.3.6.1.4.1.13742.6.5.2.3.1.4
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: inletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+      - name: outletId
+        oid: 1.3.6.1.4.1.13742.6.3.5.3.1.1
+        type: gauge
+        help: A unique value for each outlet - 1.3.6.1.4.1.13742.6.3.5.3.1.1
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+      - name: outletLabel
+        oid: 1.3.6.1.4.1.13742.6.3.5.3.1.2
+        type: DisplayString
+        help: The label on the PDU identifying the outlet. - 1.3.6.1.4.1.13742.6.3.5.3.1.2
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+      - name: outletName
+        oid: 1.3.6.1.4.1.13742.6.3.5.3.1.3
+        type: DisplayString
+        help: The user-defined name. - 1.3.6.1.4.1.13742.6.3.5.3.1.3
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+      - name: outletSwitchable
+        oid: 1.3.6.1.4.1.13742.6.3.5.3.1.28
+        type: gauge
+        help: Is this outlet switchable? - 1.3.6.1.4.1.13742.6.3.5.3.1.28
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+        enum_values:
+          1: "true"
+          2: "false"
+      - name: outletSensorUnits
+        oid: 1.3.6.1.4.1.13742.6.3.5.4.1.6
+        type: gauge
+        help: The unit in which the sensor reading is reported - 1.3.6.1.4.1.13742.6.3.5.4.1.6
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+              14: onOff
+        enum_values:
+          -1: none
+          0: other
+          1: volt
+          2: amp
+          3: watt
+      - name: outletSensorDecimalDigits
+        oid: 1.3.6.1.4.1.13742.6.3.5.4.1.7
+        type: gauge
+        help: The number of digits displayed to the right of the decimal point - 1.3.6.1.4.1.13742.6.3.5.4.1.7
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+              14: onOff
+      - name: measurementsOutletSensorValue
+        oid: 1.3.6.1.4.1.13742.6.5.4.3.1.4
+        type: gauge
+        help: The sensor reading as an unsigned integer - 1.3.6.1.4.1.13742.6.5.4.3.1.4
+        indexes:
+          - labelname: pduId
+            type: gauge
+          - labelname: outletId
+            type: gauge
+          - labelname: sensorType
+            type: gauge
+            enum_values:
+              1: rmsCurrent
+              4: rmsVoltage
+              5: activePower
+              14: onOff
+EOF
+)
 echo ""
 echo "Starting Prometheus + SNMP Exporter Duo Setup..."
 if [[ $EUID -ne 0 ]]; then
@@ -102,6 +302,7 @@ fi
 # Checks for Docker
 if ! command -v docker &> /dev/null; then
   echo "Docker not found. Installing..."
+  dnf install -y dnf-plugins-core
   dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
   dnf install -y docker-ce docker-ce-cli containerd.io
   systemctl enable docker
@@ -152,11 +353,16 @@ echo ""
 while true; do
   read -p "Would you like to open firewall ports for Grafana (3000), Prometheus (9090), and SNMP Exporter (9116)? (y/n): " confirm
   if [[ $confirm =~ ^[Yy]$ || $confirm =~ ^[Yy][Ee][Ss]$ ]]; then
-    firewall-cmd --add-port=3000/tcp --permanent
-    firewall-cmd --add-port=9090/tcp --permanent
-    firewall-cmd --add-port=9116/tcp --permanent
-    firewall-cmd --reload
-    echo "Ports 3000, 9090, 9116 are now open."
+    if command -v firewall-cmd &> /dev/null; then
+      firewall-cmd --add-port=3000/tcp --permanent
+      firewall-cmd --add-port=9090/tcp --permanent
+      firewall-cmd --add-port=9116/tcp --permanent
+      firewall-cmd --reload
+      echo "Ports 3000, 9090, 9116 are now open."
+    else
+      echo "firewall-cmd was not found. Skipping port configuration."
+      echo "Open ports 3000, 9090, and 9116 manually if a firewall is enabled."
+    fi
     echo ""
     break
   elif [[ $confirm =~ ^[Nn]$ || $confirm =~ ^[Nn][Oo]$ ]]; then
@@ -174,15 +380,64 @@ mkdir -p /opt/monitoring-duo/config
 mkdir -p /opt/monitoring-duo/snmp
 echo "Directories created."
 
-# Default official download for snmp.yml file from Prometheus Repo
-echo "Fetching snmp.yml from Prometheus GitHub..."
-curl -sSL https://raw.githubusercontent.com/prometheus/snmp_exporter/main/snmp.yml \
-  -o /opt/monitoring-duo/snmp/snmp.yml
-echo "snmp.yml downloaded to /opt/monitoring-duo/snmp/"
+BASE_SNMP_TMP=$(mktemp)
+CUSTOM_SNMP_TMP=$(mktemp)
+PROM_YML_TMP=$(mktemp)
+cleanup() {
+  rm -f "$BASE_SNMP_TMP" "$CUSTOM_SNMP_TMP" "$PROM_YML_TMP"
+}
+trap cleanup EXIT
 
-# Remove deprecated config fields to prevent SNMP Exporter from crashing
-sed -i '/datetime_pattern:/d' /opt/monitoring-duo/snmp/snmp.yml
-echo "Cleaned deprecated datetime_pattern fields from snmp.yml."
+# Default official download for snmp.yml file from Prometheus Repo
+echo "Fetching pinned snmp.yml from Prometheus GitHub..."
+if ! curl -sSL "https://raw.githubusercontent.com/prometheus/snmp_exporter/v${SNMP_EXPORTER_VERSION}/snmp.yml" \
+  -o "$BASE_SNMP_TMP"; then
+  echo "Failed to download snmp.yml for snmp_exporter v${SNMP_EXPORTER_VERSION}."
+  echo "Check network connectivity and try again."
+  exit 1
+fi
+printf '%s\n' "$SERVERTECH_SNMP_MODULE" > "$CUSTOM_SNMP_TMP"
+
+echo "Merging upstream snmp.yml with lean ServerTech module..."
+if [[ -f /opt/monitoring-duo/snmp/snmp.yml ]]; then
+  backup_path="/opt/monitoring-duo/snmp/snmp.yml.bak.$(date +%Y%m%d%H%M%S)"
+  cp /opt/monitoring-duo/snmp/snmp.yml "$backup_path"
+  echo "Backed up existing snmp.yml to $backup_path"
+fi
+python3 - "$BASE_SNMP_TMP" "$CUSTOM_SNMP_TMP" /opt/monitoring-duo/snmp/snmp.yml <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+
+def strip_datetime_pattern(node):
+    if isinstance(node, dict):
+        node.pop("datetime_pattern", None)
+        for value in node.values():
+            strip_datetime_pattern(value)
+    elif isinstance(node, list):
+        for item in node:
+            strip_datetime_pattern(item)
+
+
+def load_yaml(path):
+    with Path(path).open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+base_path, custom_path, output_path = sys.argv[1:4]
+base_config = load_yaml(base_path)
+custom_config = load_yaml(custom_path)
+
+base_config.setdefault("auths", {}).update(custom_config.get("auths", {}))
+base_config.setdefault("modules", {}).update(custom_config.get("modules", {}))
+strip_datetime_pattern(base_config)
+
+with Path(output_path).open("w", encoding="utf-8") as handle:
+    yaml.safe_dump(base_config, handle, sort_keys=False)
+PY
+echo "snmp.yml written to /opt/monitoring-duo/snmp/ with lean ServerTech support."
 
 # Additional instructions for prometheus.yml generation.
 # Prompt user for path of prometheus.yml
@@ -213,8 +468,41 @@ while true; do
   echo ""
   read -r PROM_YML_PATH
   if [[ -f "$PROM_YML_PATH" ]]; then
-    cp "$PROM_YML_PATH" /opt/monitoring-duo/config/prometheus.yml
-    echo "prometheus.yml copied to /opt/monitoring-duo/config/"
+    cp "$PROM_YML_PATH" "$PROM_YML_TMP"
+    if [[ -f /opt/monitoring-duo/config/prometheus.yml ]]; then
+      backup_path="/opt/monitoring-duo/config/prometheus.yml.bak.$(date +%Y%m%d%H%M%S)"
+      cp /opt/monitoring-duo/config/prometheus.yml "$backup_path"
+      echo "Backed up existing prometheus.yml to $backup_path"
+    fi
+    python3 - "$PROM_YML_TMP" /opt/monitoring-duo/config/prometheus.yml <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+
+def normalize_snmp_job(job, snmp_endpoint):
+    relabels = job.setdefault("relabel_configs", [])
+    found = False
+    for relabel in relabels:
+        if relabel.get("target_label") == "__address__":
+            relabel["replacement"] = snmp_endpoint
+            found = True
+    if not found:
+        relabels.append({"target_label": "__address__", "replacement": snmp_endpoint})
+
+
+source_path, output_path = sys.argv[1:3]
+config = yaml.safe_load(Path(source_path).read_text()) or {}
+
+for job in config.get("scrape_configs", []):
+    job.pop("fallback_scrape_protocol", None)
+    if job.get("metrics_path") == "/snmp":
+        normalize_snmp_job(job, "localhost:9116")
+
+Path(output_path).write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+PY
+    echo "prometheus.yml normalized and copied to /opt/monitoring-duo/config/"
     break
   else
     echo ""
@@ -286,8 +574,6 @@ echo "entrypoint.sh script created and made executable."
 # Creation of docker-compose.yml
 echo "Creating docker-compose.yml"
 cat <<'EOF' > /opt/monitoring-duo/docker-compose.yml
-version: '3.8'
-
 services:
   prom-snmp:
     build: .
@@ -321,6 +607,8 @@ echo ""
 echo "================================================================="
 echo "Access Prometheus at: http://$SERVER_IP:9090"
 echo "Access SNMP Exporter at: http://$SERVER_IP:9116/metrics"
+echo "Container name: prom-snmp-duo"
+echo "Restart command: docker restart prom-snmp-duo"
 echo ""
 echo "Checking container status..."
 docker ps --filter "name=prom-snmp-duo"
